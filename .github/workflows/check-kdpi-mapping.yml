@@ -1,0 +1,66 @@
+name: Check OPTN KDPI mapping
+
+on:
+  schedule:
+    - cron: "37 15 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: check-optn-kdpi-mapping
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the current official mapping
+        id: mapping
+        run: |
+          python3 Scripts/check_for_kdpi_mapping_update.py \
+            --catalog Research/kdpi_mapping_tables.json \
+            --swift-output KDPICalculator/KDPIMappingTables.swift
+          python3 Scripts/generate_kdpi_mapping_data.py \
+            --catalog Research/kdpi_mapping_tables.json \
+            --output KDPICalculator/KDPIMappingTables.swift \
+            --check
+          swiftc \
+            KDPICalculator/KDPIMappingTables.swift \
+            KDPICalculator/KDPICalculator.swift \
+            Scripts/verify_kdpi_logic.swift \
+            -o /tmp/verify-kdpi-logic
+          /tmp/verify-kdpi-logic
+          if git diff --quiet -- Research/kdpi_mapping_tables.json KDPICalculator/KDPIMappingTables.swift; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "updated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a review pull request
+        if: steps.mapping.outputs.updated == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          year="$(python3 -c 'import json; print(json.load(open("Research/kdpi_mapping_tables.json"))["tables"][-1]["referenceYear"])')"
+          branch="automation/kdpi-mapping-${year}-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add Research/kdpi_mapping_tables.json KDPICalculator/KDPIMappingTables.swift
+          git commit -m "Update OPTN KDPI mapping for ${year}"
+          git push origin "$branch"
+          gh pr create \
+            --base "$DEFAULT_BRANCH" \
+            --head "$branch" \
+            --title "Update OPTN KDPI mapping for ${year}" \
+            --body "Automated candidate update from HRSA's current official KDPI PDF. The importer validated 102 continuous rows, scaling, unknown-value prevalences, chronology, generated Swift data, and the official worked example. Human review is required before merge; confirm that OPTN did not also change the KDRI formula."
