@@ -6,15 +6,55 @@ struct KDPITimeMachineView: View {
     private let minimum: Int
     private let maximum: Int
     private let current: KDPIHistoricalPoint?
-    private let usesLegacyFactors: Bool
+    private let historicalInputsConfirmed: Bool
+    private let legacyInputSummary: String
+    private let inputError: KDPIInputError?
 
     init(inputs: KDPIDonorInputs) {
-        let points = KDPICalculator.historicalResults(inputs: inputs)
+        let historicalInputsConfirmed = inputs.historicalInputsConfirmed
+        let points: [KDPIHistoricalPoint]
+        do {
+            points = try KDPICalculator.historicalResults(inputs: inputs)
+            self.inputError = nil
+        } catch {
+            points = []
+            self.inputError = error
+        }
         self.points = points
         self.minimum = points.map(\.result.percentile).min() ?? 0
         self.maximum = points.map(\.result.percentile).max() ?? 100
         self.current = points.last
-        self.usesLegacyFactors = inputs.blackOrAfricanAmerican || inputs.hcvPositive
+        self.historicalInputsConfirmed = historicalInputsConfirmed
+        self.legacyInputSummary = "Black/African American: \(inputs.blackOrAfricanAmerican ? "Yes" : "No") · HCV positive: \(inputs.hcvPositive ? "Yes" : "No")"
+    }
+
+    private var legacyTransition: KDPIHistoricalPoint? {
+        points.last { $0.table.formulaVersion == .legacyRaceHCV }
+    }
+
+    private var refitTransition: KDPIHistoricalPoint? {
+        points.first { $0.table.formulaVersion == .raceHCVNeutral2024 }
+    }
+
+    private var xDomain: ClosedRange<Double> {
+        let positions = points.map(\.table.timelinePosition)
+        guard let first = positions.min(), let last = positions.max() else {
+            return 0...1
+        }
+        return (first - 0.45)...(last + 0.55)
+    }
+
+    private var xAxisPositions: [Double] {
+        let positions = points.map(\.table.timelinePosition).sorted()
+        guard positions.count > 5 else { return positions }
+
+        // Keep labels readable on an iPhone while preserving the formula transition.
+        let sampled = [0.0, 0.3, 0.6, 1.0].map { fraction in
+            let offset = Int((fraction * Double(positions.count - 1)).rounded())
+            return positions[offset]
+        }
+        let refit = refitTransition?.table.timelinePosition
+        return Array(Set(sampled + [refit].compactMap { $0 })).sorted()
     }
 
     private var yDomain: ClosedRange<Double> {
@@ -28,9 +68,13 @@ struct KDPITimeMachineView: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: 16) {
-                explanationCard
-                chartCard
-                releaseHistory
+                if let inputError {
+                    KDPIInputErrorView(error: inputError)
+                } else {
+                    explanationCard
+                    chartCard
+                    releaseHistory
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -41,12 +85,12 @@ struct KDPITimeMachineView: View {
     }
 
     private var explanationCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Same donor characteristics")
+                    Text("Same donor, different releases")
                         .font(.headline)
-                    Text("Recalculated under each historical release")
+                    Text("Fixed characteristics recalculated with each OPTN method")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -59,14 +103,14 @@ struct KDPITimeMachineView: View {
                 }
             }
 
-            Text("This is not the donor aging over time. Age, height, weight, creatinine, and clinical flags stay fixed. Each point applies that release’s KDRI formula, unknown-value assumptions, scaling factor, and KDPI mapping.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-
-            if usesLegacyFactors {
-                Label("Race and/or HCV affects releases before Oct. 31, 2024 only.", systemImage: "info.circle.fill")
+            if historicalInputsConfirmed {
+                Label(legacyInputSummary, systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.indigo)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("Pre-refit points use the legacy values shown above. Review those values on the calculator for an accurate replay.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.orange)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -83,17 +127,17 @@ struct KDPITimeMachineView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                VStack(alignment: .trailing, spacing: 1) {
-                    Text("Lower").font(.caption.weight(.semibold)).foregroundStyle(.green)
-                    Text("estimated risk").font(.caption2).foregroundStyle(.secondary)
-                }
+                Label("Lower is better", systemImage: "arrow.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
             }
 
             Chart {
                 ForEach(points) { point in
                     LineMark(
                         x: .value("Release", point.table.timelinePosition),
-                        y: .value("KDPI", point.result.percentile)
+                        y: .value("KDPI", point.result.percentile),
+                        series: .value("Formula", point.table.formulaVersion.rawValue)
                     )
                     .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(.teal)
@@ -108,6 +152,19 @@ struct KDPITimeMachineView: View {
                     .accessibilityValue("KDPI \(point.result.percentile) percent")
                 }
 
+                if let current {
+                    PointMark(
+                        x: .value("Current release", current.table.timelinePosition),
+                        y: .value("Current KDPI", current.result.percentile)
+                    )
+                    .symbolSize(0)
+                    .annotation(position: .top, alignment: .trailing) {
+                        Text("Current")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.indigo)
+                    }
+                }
+
                 RuleMark(x: .value("Formula refit", 2024.83))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     .foregroundStyle(.indigo.opacity(0.7))
@@ -117,10 +174,11 @@ struct KDPITimeMachineView: View {
                             .foregroundStyle(.indigo)
                     }
             }
-            .chartXScale(domain: 2016.8...2026.65)
+            .chartLegend(.hidden)
+            .chartXScale(domain: xDomain)
             .chartYScale(domain: yDomain)
             .chartXAxis {
-                AxisMarks(values: [2017.4, 2019.4, 2021.4, 2023.4, 2024.83, 2026.4]) { value in
+                AxisMarks(values: xAxisPositions) { value in
                     AxisGridLine()
                     AxisValueLabel {
                         if let position = value.as(Double.self) {
@@ -140,6 +198,26 @@ struct KDPITimeMachineView: View {
             }
             .frame(height: 260)
             .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+
+            if let legacyTransition, let refitTransition {
+                HStack(spacing: 8) {
+                    Text("\(legacyTransition.result.percentile)%")
+                        .font(.subheadline.weight(.bold))
+                        .monospacedDigit()
+                    Image(systemName: "arrow.right")
+                        .font(.caption.weight(.bold))
+                    Text("\(refitTransition.result.percentile)%")
+                        .font(.subheadline.weight(.bold))
+                        .monospacedDigit()
+                    Text("Formula changed Oct. 31, 2024")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(10)
+                .background(.indigo.opacity(0.09), in: RoundedRectangle(cornerRadius: 10))
+                .accessibilityElement(children: .combine)
+            }
         }
         .cardStyle()
     }
@@ -195,5 +273,7 @@ struct KDPITimeMachineView: View {
 }
 
 #Preview {
-    NavigationStack { KDPITimeMachineView(inputs: .example) }
+    NavigationStack {
+        KDPITimeMachineView(inputs: .example)
+    }
 }

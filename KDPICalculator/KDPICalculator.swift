@@ -29,6 +29,9 @@ struct KDPIDonorInputs: Equatable, Sendable {
     // Historical-only factors. The current formula deliberately ignores them.
     var blackOrAfricanAmerican: Bool
     var hcvPositive: Bool
+
+    // UI provenance for historical replay. Calculation code ignores this flag.
+    var historicalInputsConfirmed: Bool = false
 }
 
 struct KDPIResult: Equatable, Sendable {
@@ -46,12 +49,32 @@ struct KDPIHistoricalPoint: Identifiable, Sendable {
     var id: String { table.id }
 }
 
+enum KDPIInputError: Error, Equatable, Sendable {
+    case invalidAge
+    case invalidHeight
+    case invalidWeight
+    case invalidCreatinine
+
+    var message: LocalizedStringResource {
+        switch self {
+        case .invalidAge:
+            "Age must be a finite number from 0 to 99 years."
+        case .invalidHeight:
+            "Height must be a finite number from 0 to 241.3 cm."
+        case .invalidWeight:
+            "Weight must be a finite number from 0.454 to 294 kg."
+        case .invalidCreatinine:
+            "Serum creatinine must be a finite number greater than 0 mg/dL."
+        }
+    }
+}
+
 enum KDPICalculator {
     static func calculate(
         inputs: KDPIDonorInputs,
         mappingTable: KDPIMappingTable = KDPIMappingTables.current
-    ) -> KDPIResult {
-        validate(inputs)
+    ) throws(KDPIInputError) -> KDPIResult {
+        try validate(inputs)
         let rao = raoKDRI(
             inputs: inputs,
             formula: mappingTable.formulaVersion,
@@ -70,13 +93,17 @@ enum KDPICalculator {
 
     /// Recalculates the same donor characteristics with every contemporaneous
     /// formula, scaling factor, imputation prevalence, and percentile mapping.
-    static func historicalResults(inputs: KDPIDonorInputs) -> [KDPIHistoricalPoint] {
-        KDPIMappingTables.all.map { table in
-            KDPIHistoricalPoint(table: table, result: calculate(inputs: inputs, mappingTable: table))
+    static func historicalResults(inputs: KDPIDonorInputs) throws(KDPIInputError) -> [KDPIHistoricalPoint] {
+        try validate(inputs)
+        var points: [KDPIHistoricalPoint] = []
+        for table in KDPIMappingTables.all {
+            let result = try calculate(inputs: inputs, mappingTable: table)
+            points.append(KDPIHistoricalPoint(table: table, result: result))
         }
+        return points
     }
 
-    static func raoKDRI(
+    private static func raoKDRI(
         inputs: KDPIDonorInputs,
         formula: KDRIFormulaVersion,
         diabetesPrevalence: Double,
@@ -123,10 +150,18 @@ enum KDPICalculator {
         return exp(linearPredictor)
     }
 
-    private static func validate(_ inputs: KDPIDonorInputs) {
-        precondition(inputs.age.isFinite && (0...99).contains(inputs.age))
-        precondition(inputs.heightCM.isFinite && (0...241.3).contains(inputs.heightCM))
-        precondition(inputs.weightKG.isFinite && (0.454...294).contains(inputs.weightKG))
-        precondition(inputs.serumCreatinine.isFinite && inputs.serumCreatinine > 0)
+    private static func validate(_ inputs: KDPIDonorInputs) throws(KDPIInputError) {
+        guard inputs.age.isFinite && (0...99).contains(inputs.age) else {
+            throw .invalidAge
+        }
+        guard inputs.heightCM.isFinite && (0...241.3).contains(inputs.heightCM) else {
+            throw .invalidHeight
+        }
+        guard inputs.weightKG.isFinite && (0.454...294).contains(inputs.weightKG) else {
+            throw .invalidWeight
+        }
+        guard inputs.serumCreatinine.isFinite && inputs.serumCreatinine > 0 else {
+            throw .invalidCreatinine
+        }
     }
 }

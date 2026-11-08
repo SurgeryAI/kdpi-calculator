@@ -2,7 +2,7 @@ import Foundation
 
 @main
 struct VerifyKDPILogic {
-    static func main() {
+    static func main() throws {
         let officialExample = KDPIDonorInputs(
             age: 52,
             heightCM: 183,
@@ -18,7 +18,7 @@ struct VerifyKDPILogic {
         guard let refit2023 = KDPIMappingTables.all.first(where: { $0.releaseLabel == "Oct. 2024 refit" }) else {
             fatalError("Missing Oct. 2024 refit table")
         }
-        let exampleResult = KDPICalculator.calculate(inputs: officialExample, mappingTable: refit2023)
+        let exampleResult = try KDPICalculator.calculate(inputs: officialExample, mappingTable: refit2023)
         requireClose(exampleResult.raoKDRI, 1.71235565748184, tolerance: 1e-12, "official example RAO KDRI")
         requireClose(exampleResult.scaledKDRI, 1.3081317836685, tolerance: 1e-12, "official example scaled KDRI")
         precondition(exampleResult.percentile == 79, "Official example must map to KDPI 79")
@@ -26,15 +26,15 @@ struct VerifyKDPILogic {
         var historicalFlags = officialExample
         historicalFlags.blackOrAfricanAmerican = true
         historicalFlags.hcvPositive = true
-        let currentWithoutFlags = KDPICalculator.calculate(inputs: officialExample)
-        let currentWithFlags = KDPICalculator.calculate(inputs: historicalFlags)
+        let currentWithoutFlags = try KDPICalculator.calculate(inputs: officialExample)
+        let currentWithFlags = try KDPICalculator.calculate(inputs: historicalFlags)
         requireClose(currentWithoutFlags.raoKDRI, currentWithFlags.raoKDRI, tolerance: 0, "current formula ignores race and HCV")
 
         guard let legacy = KDPIMappingTables.all.first(where: { $0.formulaVersion == .legacyRaceHCV }) else {
             fatalError("Missing legacy table")
         }
-        let legacyWithoutFlags = KDPICalculator.calculate(inputs: officialExample, mappingTable: legacy)
-        let legacyWithFlags = KDPICalculator.calculate(inputs: historicalFlags, mappingTable: legacy)
+        let legacyWithoutFlags = try KDPICalculator.calculate(inputs: officialExample, mappingTable: legacy)
+        let legacyWithFlags = try KDPICalculator.calculate(inputs: historicalFlags, mappingTable: legacy)
         precondition(legacyWithFlags.raoKDRI > legacyWithoutFlags.raoKDRI, "Legacy formula must apply race and HCV coefficients")
 
         let table = KDPIMappingTables.current

@@ -12,6 +12,8 @@ A SwiftUI iPhone calculator for the OPTN Kidney Donor Profile Index (KDPI), with
 
 ## Verification
 
+Run the Swift Testing validation and calculation regression suite with `swift test`.
+
 ```sh
 python3 Scripts/generate_kdpi_mapping_data.py \
   --catalog Research/kdpi_mapping_tables.json \

@@ -14,7 +14,12 @@ final class KDPIViewModel {
     var blackOrAfricanAmerican = false { didSet { recalculate() } }
     var hcvPositive = false { didSet { recalculate() } }
 
-    private(set) var result = KDPICalculator.calculate(inputs: .example)
+    private(set) var result: KDPIResult?
+    private(set) var inputError: KDPIInputError?
+
+    init() {
+        recalculate()
+    }
 
     var inputs: KDPIDonorInputs {
         KDPIDonorInputs(
@@ -32,7 +37,14 @@ final class KDPIViewModel {
     }
 
     private func recalculate() {
-        result = KDPICalculator.calculate(inputs: inputs)
+        do {
+            result = try KDPICalculator.calculate(inputs: inputs)
+            inputError = nil
+        } catch {
+            // Clear the previous score so invalid inputs never display a stale result.
+            result = nil
+            inputError = error
+        }
     }
 }
 
@@ -54,22 +66,30 @@ extension KDPIDonorInputs {
 struct ContentView: View {
     @State private var vm = KDPIViewModel()
     @State private var showHistoricalInputs = false
+    @State private var historicalInputsConfirmed = false
     @State private var showInfo = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(spacing: 16) {
-                    resultCard
+                    if let result = vm.result {
+                        CurrentKDPICard(percentile: result.percentile)
+                    } else if let error = vm.inputError {
+                        KDPIInputErrorView(error: error)
+                    }
                     inputCard
                     timeMachineLink
+                        .disabled(vm.result == nil)
                     sourceFooter
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 12)
             }
             .background(Color(.systemGroupedBackground).ignoresSafeArea())
             .navigationTitle("KDPI Calculator")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showInfo = true } label: { Image(systemName: "info.circle") }
@@ -80,67 +100,17 @@ struct ContentView: View {
         }
     }
 
-    private var resultCard: some View {
-        VStack(spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("CURRENT KDPI")
-                        .font(.caption.weight(.semibold))
-                        .tracking(0.8)
-                        .foregroundStyle(.secondary)
-                    Text("\(vm.result.percentile)%")
-                        .font(.system(size: 58, weight: .bold, design: .rounded))
-                        .foregroundStyle(scoreColor(vm.result.percentile))
-                        .monospacedDigit()
-                }
-                Spacer()
-                Image(systemName: "kidney")
-                    .font(.system(size: 34, weight: .medium))
-                    .foregroundStyle(scoreColor(vm.result.percentile))
-                    .frame(width: 58, height: 58)
-                    .background(scoreColor(vm.result.percentile).opacity(0.12), in: Circle())
-            }
-
-            Gauge(value: Double(vm.result.percentile), in: 0...100) { EmptyView() }
-                .gaugeStyle(.linearCapacity)
-                .tint(LinearGradient(colors: [.green, .teal, .orange, .red], startPoint: .leading, endPoint: .trailing))
-
-            HStack {
-                metric("Scaled KDRI", vm.result.scaledKDRI.formatted(.number.precision(.fractionLength(3))))
-                Divider().frame(height: 34)
-                metric("Reference", String(vm.result.mappingReferenceYear))
-                Divider().frame(height: 34)
-                metric("Formula", "2024 refit")
-            }
-
-            Text("Lower KDPI indicates lower estimated relative graft-failure risk in the reference population. It does not determine whether a kidney is suitable for a particular recipient.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .cardStyle()
-        .accessibilityElement(children: .contain)
-    }
-
-    private func metric(_ label: String, _ value: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value).font(.subheadline.weight(.semibold)).monospacedDigit()
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
     private var inputCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             Label("Donor characteristics", systemImage: "list.clipboard.fill")
                 .font(.headline)
                 .padding(.bottom, 12)
 
-            sliderRow("Age", value: $vm.age, range: 0...99, step: 1, valueText: "\(Int(vm.age)) yr")
+            sliderRow("Age", value: $vm.age, range: 0...99, step: 1, valueText: "\(vm.age.formatted(.number.precision(.fractionLength(0)))) yr")
             rowDivider
-            sliderRow("Height", value: $vm.heightCM, range: 30...241, step: 1, valueText: "\(Int(vm.heightCM)) cm")
+            sliderRow("Height", value: $vm.heightCM, range: 30...241, step: 1, valueText: "\(vm.heightCM.formatted(.number.precision(.fractionLength(0)))) cm")
             rowDivider
-            sliderRow("Weight", value: $vm.weightKG, range: 1...294, step: 1, valueText: "\(Int(vm.weightKG)) kg")
+            sliderRow("Weight", value: $vm.weightKG, range: 1...294, step: 1, valueText: "\(vm.weightKG.formatted(.number.precision(.fractionLength(0)))) kg")
             rowDivider
             sliderRow("Serum creatinine", value: $vm.serumCreatinine, range: 0.1...12, step: 0.1, valueText: vm.serumCreatinine.formatted(.number.precision(.fractionLength(1))) + " mg/dL")
             Text("Values above 8 mg/dL are capped at 8 by the OPTN calculation.")
@@ -165,12 +135,29 @@ struct ContentView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Divider()
+
+                    Toggle(isOn: $historicalInputsConfirmed) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Historical values reviewed")
+                            Text("Confirms the pre-refit results use the correct legacy values")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .padding(.top, 10)
             } label: {
                 Text("Historical-only inputs").font(.subheadline.weight(.medium))
             }
             .padding(.vertical, 7)
+            .onChange(of: vm.blackOrAfricanAmerican) { _, _ in
+                historicalInputsConfirmed = false
+            }
+            .onChange(of: vm.hcvPositive) { _, _ in
+                historicalInputsConfirmed = false
+            }
         }
         .tint(.teal)
         .cardStyle()
@@ -191,7 +178,15 @@ struct ContentView: View {
                 Spacer()
                 Text(valueText).font(.subheadline.weight(.semibold)).foregroundStyle(.teal).monospacedDigit()
             }
-            Slider(value: value, in: range, step: step)
+            // Keep the control renderable even when an invalid value arrives externally.
+            // The model retains that value and its error until the user adjusts the slider.
+            Slider(value: Binding(
+                get: {
+                    guard value.wrappedValue.isFinite else { return range.lowerBound }
+                    return min(max(value.wrappedValue, range.lowerBound), range.upperBound)
+                },
+                set: { value.wrappedValue = $0 }
+            ), in: range, step: step)
                 .accessibilityLabel(title)
                 .accessibilityValue(valueText)
         }
@@ -210,7 +205,7 @@ struct ContentView: View {
 
     private var timeMachineLink: some View {
         NavigationLink {
-            KDPITimeMachineView(inputs: vm.inputs)
+            KDPITimeMachineView(inputs: timeMachineInputs)
         } label: {
             HStack(spacing: 14) {
                 Image(systemName: "clock.arrow.circlepath")
@@ -220,7 +215,9 @@ struct ContentView: View {
                     .background(.indigo.opacity(0.11), in: RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 3) {
                     Text("KDPI Time Machine").font(.headline).foregroundStyle(.primary)
-                    Text("Same donor, 11 historical releases").font(.caption).foregroundStyle(.secondary)
+                    Text("Historical releases back to 2017")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(.tertiary)
@@ -228,6 +225,12 @@ struct ContentView: View {
         }
         .buttonStyle(.plain)
         .cardStyle()
+    }
+
+    private var timeMachineInputs: KDPIDonorInputs {
+        var inputs = vm.inputs
+        inputs.historicalInputsConfirmed = historicalInputsConfirmed
+        return inputs
     }
 
     private var sourceFooter: some View {
@@ -244,6 +247,29 @@ struct ContentView: View {
     private var informationSheet: some View {
         NavigationStack {
             List {
+                Section {
+                    Link(destination: URL(string: "https://transplanttools.com")!) {
+                        HStack(spacing: 14) {
+                            Image(systemName: "globe")
+                                .font(.title2)
+                                .frame(width: 36, height: 36)
+                                .background(.teal.opacity(0.12), in: Circle())
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Visit TransplantTools.com")
+                                    .font(.headline)
+                                Text("More transplant tools and resources")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 6)
+                    }
+                    .foregroundStyle(.teal)
+                }
                 Section("What this calculates") {
                     Text("KDPI maps the donor-only KDRI to a percentile of the current OPTN deceased-donor reference population.")
                 }
@@ -252,6 +278,9 @@ struct ContentView: View {
                 }
                 Section("Current method") {
                     Text("The current calculation uses the race- and HCV-neutral KDRI formula implemented Oct. 31, 2024 and the latest published mapping table.")
+                }
+                Section("Developer") {
+                    Text("Developed by Marc L. Melcher, MD")
                 }
             }
             .navigationTitle("About KDPI")
@@ -267,6 +296,66 @@ struct ContentView: View {
         case 51...85: .orange
         default: .red
         }
+    }
+}
+
+private struct CurrentKDPICard: View {
+    let percentile: Int
+    @ScaledMetric(relativeTo: .title2) private var ringSize = 76
+
+    var body: some View {
+        HStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 6)
+                Circle()
+                    .inset(by: 3)
+                    .trim(from: 0, to: Double(percentile) / 100)
+                    .stroke(.teal, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Text("\(percentile)%")
+                    .font(.system(.title2, design: .rounded, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(8)
+            }
+            .frame(width: ringSize, height: ringSize)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Current KDPI")
+                    .font(.headline)
+                Text("Lower KDPI means lower relative graft-failure risk.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .cardStyle()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Current KDPI")
+        .accessibilityValue("\(percentile) percent")
+        .accessibilityHint("Lower KDPI means lower relative graft-failure risk.")
+    }
+}
+
+struct KDPIInputErrorView: View {
+    let error: KDPIInputError
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Unable to calculate KDPI", systemImage: "exclamationmark.triangle")
+                .font(.headline)
+            Text(error.message)
+                .font(.subheadline)
+            Text("Adjust the donor inputs to calculate again.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardStyle()
     }
 }
 
